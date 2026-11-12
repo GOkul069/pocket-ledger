@@ -1,9 +1,9 @@
 'use strict';
 /* Pocket Ledger — a local-first expense tracker. All data lives in IndexedDB on this device. */
 
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 const DB_NAME = 'pocket-ledger';
-const STORES = ['transactions', 'categories', 'budgets', 'recurring', 'paymentMethods', 'prefs', 'receipts'];
+const STORES = ['transactions', 'categories', 'budgets', 'recurring', 'paymentMethods', 'prefs', 'receipts', 'loans'];
 
 const DEFAULT_CATS = [
   ['Groceries', '🛒', 'expense'], ['Takeout & delivery', '🍜', 'expense'], ['Travel', '🚕', 'expense'],
@@ -48,7 +48,7 @@ const opts = (list, sel) => list.map(([v, l]) => `<option value="${esc(v)}"${v =
 let dbh;
 function openDB() {
   return new Promise((res, rej) => {
-    const r = indexedDB.open(DB_NAME, 1);
+    const r = indexedDB.open(DB_NAME, 2);
     r.onupgradeneeded = () => { for (const s of STORES) if (!r.result.objectStoreNames.contains(s)) r.result.createObjectStore(s, { keyPath: 'id' }); };
     r.onsuccess = () => res(r.result);
     r.onerror = () => rej(r.error);
@@ -71,7 +71,7 @@ const bulkPut = (store, arr) => txn(store, 'readwrite', s => { arr.forEach(v => 
 
 /* ---------- state ---------- */
 const S = {
-  tx: [], cats: [], budgets: [], recurring: [], pms: [], prefs: {},
+  tx: [], cats: [], budgets: [], recurring: [], pms: [], loans: [], prefs: {},
   view: 'home', month: today().slice(0, 7),
   f: { q: '', period: 'month', type: 'all', cat: 'all', pm: 'all', from: '', to: '' },
 };
@@ -85,7 +85,8 @@ const fp = t => [t.date, t.type, t.amount, (cat(t.categoryId)?.name || '').toLow
 const setPref = (k, v) => { S.prefs[k] = v; return put('prefs', { id: k, value: v }); };
 
 async function loadAll() {
-  [S.tx, S.cats, S.budgets, S.recurring, S.pms] = await Promise.all(['transactions', 'categories', 'budgets', 'recurring', 'paymentMethods'].map(all));
+  [S.tx, S.cats, S.budgets, S.recurring, S.pms, S.loans] = await Promise.all(['transactions', 'categories', 'budgets', 'recurring', 'paymentMethods', 'loans'].map(all));
+  S.loans.sort((a, b) => b.date.localeCompare(a.date) || (b.createdAt || 0) - (a.createdAt || 0));
   S.prefs = {};
   (await all('prefs')).forEach(p => { S.prefs[p.id] = p.value; });
   S.cats.sort((a, b) => (a.order || 0) - (b.order || 0));
@@ -229,6 +230,8 @@ const VIEWS = {
     const day = new Date().getDate();
     const bills = upcoming();
     const last = S.prefs.lastBackup ? new Date(S.prefs.lastBackup) : null;
+    const owed = new Map(); S.loans.forEach(l => { if (!l.settled) owed.set(l.person, (owed.get(l.person) || 0) + l.amount); });
+    const owedTotal = [...owed.values()].reduce((a, b) => a + b, 0);
     const stale = S.tx.length >= 5 && (!last || Date.now() - last > 14 * 864e5) && !(S.prefs.backupSnooze > Date.now());
     V.innerHTML = `
       <section class="hero">
@@ -245,8 +248,10 @@ const VIEWS = {
       <div class="sec"><h2>Upcoming bills</h2><button class="link" data-act="recurring">${S.recurring.length ? 'Manage' : 'Add'}</button></div>
       <div class="card flush">${bills.length ? bills.map(r => `<div class="bill"><span class="ico" style="background:${cat(r.categoryId)?.color || '#888888'}26">${esc(cat(r.categoryId)?.icon || '🔁')}</span><span class="mid"><b>${esc(r.name)}</b><small>${dueLabel(r.nextDate)}${r.auto ? ' · auto' : ''}</small></span><span class="amt ${r.type}">${fmt(r.amount)}</span>${r.auto ? '' : `<button class="pill" data-act="log-rec" data-id="${r.id}">Log</button>`}</div>`).join('')
         : `<div class="empty">${S.recurring.length ? 'Nothing due in the next 30 days.' : 'Add rent, subscriptions and other repeating bills to see what is coming up.'}</div>`}</div>
+      ${S.loans.length ? `<div class="sec"><h2>Owed to you · ${fmt(owedTotal)}</h2><button class="link" data-act="loans">Manage</button></div>
+      <div class="card flush">${owed.size ? [...owed].sort((a, b) => b[1] - a[1]).map(([p, a]) => `<button class="rowbtn" data-act="loans"><span class="ico" style="background:var(--accent-soft)">🤝</span><span class="mid"><b>${esc(p)}</b><small>owes you</small></span><span class="amt">${fmt(a)}</span></button>`).join('') : '<div class="empty">Everything you lent has been repaid.</div>'}</div>` : ''}
       <div class="sec"><h2>Recent</h2>${S.tx.length ? '<button class="link" data-act="nav" data-view="transactions">See all</button>' : ''}</div>
-      <div class="card flush">${S.tx.length ? S.tx.slice(0, 6).map(t => txRow(t, true)).join('') : '<div class="empty"><b>No transactions yet</b>Tap the + button to record your first expense.</div>'}</div>`;
+      <div class="card flush">${S.tx.length ? S.tx.slice(0, 6).map(t => txRow(t, true)).join('') : '<div class="empty"><b>No transactions yet</b>Tap + to record your first expense, or the microphone to say it.</div>'}</div>`;
   },
 
   transactions() {
@@ -330,6 +335,7 @@ const VIEWS = {
         <button class="rowbtn" data-act="cats"><span class="mid"><b>Categories</b><small>${S.cats.length} categories</small></span><span class="chev">›</span></button>
         <button class="rowbtn" data-act="pms"><span class="mid"><b>Payment methods</b><small>${S.pms.map(p => esc(p.name)).join(', ') || 'None'}</small></span><span class="chev">›</span></button>
         <button class="rowbtn" data-act="recurring"><span class="mid"><b>Recurring & bills</b><small>${S.recurring.length} set up</small></span><span class="chev">›</span></button>
+        <button class="rowbtn" data-act="loans"><span class="mid"><b>Lending</b><small>${S.loans.filter(l => !l.settled).length} unpaid</small></span><span class="chev">›</span></button>
       </div>
       <div class="sec"><h2>Backup & data</h2></div>
       <div class="card flush">
@@ -393,6 +399,12 @@ function fileToDataUrl(file, max = 1400) {
     img.onerror = () => { URL.revokeObjectURL(url); rej(new Error('Could not read that image')); };
     img.src = url;
   });
+}
+function showImage(src) {
+  const v = document.createElement('div');
+  v.className = 'viewer'; v.innerHTML = '<img alt="Attached photo">'; v.firstChild.src = src;
+  v.onclick = () => v.remove();
+  document.body.append(v);
 }
 function guessCat(merchant, type) {
   const m = merchant.trim().toLowerCase();
@@ -461,7 +473,7 @@ function openTxSheet(orig) {
     e.target.value = '';
   };
   q('#f-rm').onclick = () => { newReceipt = null; dropReceipt = true; showThumb(null); };
-  q('#f-view').onclick = () => { const v = document.createElement('div'); v.className = 'viewer'; v.innerHTML = `<img alt="Receipt" src="${q('#f-img').src}">`; v.onclick = () => v.remove(); document.body.append(v); };
+  q('#f-view').onclick = () => showImage(q('#f-img').src);
 
   const save = async () => {
     if (busy) return;
@@ -603,6 +615,220 @@ function openRecurring() {
     () => edit(), id => edit(S.recurring.find(r => r.id === id)));
 }
 
+/* ---------- lending ---------- */
+function openLoans() {
+  const el = openSheet(`${head('Lending')}<div class="sheet-body"><div data-list></div><button class="btn primary" data-add>Add money you lent</button></div>`, { tall: true, onClose: render });
+  const row = l => `<div class="bill" data-id="${l.id}"${l.settled ? ' style="opacity:.55"' : ''}><span class="mid"><b>${esc(l.person)}</b><small>${shortDate(l.date)}${l.note ? ' · ' + esc(l.note) : ''}${l.settled ? ' · repaid' : ''}</small></span>${l.receiptId ? '<button class="link" data-photo aria-label="View photo">📎</button>' : ''}<span class="amt">${fmt(l.amount)}</span><button class="pill" data-repay>${l.settled ? 'Undo' : 'Repaid'}</button></div>`;
+  const paint = () => {
+    const open = S.loans.filter(l => !l.settled), done = S.loans.filter(l => l.settled);
+    $('[data-list]', el).innerHTML = S.loans.length
+      ? `<p class="note" style="margin:0 2px 10px">Owed to you: <b>${fmt(open.reduce((n, l) => n + l.amount, 0))}</b>. Lent money is tracked here and is not counted as spending.</p><div class="card flush" style="margin:0">${[...open, ...done].map(row).join('')}</div>`
+      : '<div class="empty"><b>Nothing lent yet</b>Record money you lend to others and tick it off when it comes back.</div>';
+  };
+  const edit = async l => {
+    const isNew = !l;
+    l = l || { id: uid(), person: '', amount: 0, date: today(), note: '', receiptId: null, settled: false, createdAt: Date.now() };
+    const v = await formSheet({ title: isNew ? 'Money you lent' : 'Edit loan', submit: isNew ? 'Add' : 'Save', del: isNew ? '' : 'Delete', fields: [
+      { name: 'person', label: 'Lent to', value: l.person, placeholder: 'Name', max: 40 },
+      { name: 'amount', label: 'Amount', type: 'money', value: l.amount },
+      { name: 'date', label: 'Date', type: 'date', value: l.date },
+      { name: 'note', label: 'Note (optional)', value: l.note, max: 80 },
+    ] });
+    if (!v) return;
+    if (v === 'delete') { await del('loans', l.id); if (l.receiptId) await del('receipts', l.receiptId); S.loans = S.loans.filter(x => x.id !== l.id); return; }
+    if (!v.person || !(v.amount > 0)) return toast('A name and an amount are required');
+    Object.assign(l, v, { date: v.date || today() });
+    await put('loans', l);
+    if (isNew) S.loans.unshift(l);
+  };
+  paint();
+  $('[data-add]', el).onclick = async () => { await edit(); paint(); };
+  $('[data-list]', el).onclick = async e => {
+    const r = e.target.closest('[data-id]'); if (!r) return;
+    const l = S.loans.find(x => x.id === r.dataset.id);
+    if (e.target.closest('[data-photo]')) { const rc = await getOne('receipts', l.receiptId); if (rc) showImage(rc.dataUrl); return; }
+    if (e.target.closest('[data-repay]')) { l.settled = !l.settled; l.settledAt = l.settled ? Date.now() : null; await put('loans', l); }
+    else await edit(l);
+    paint();
+  };
+}
+
+/* ---------- say it / photo entry ---------- */
+const NUMW = { zero: 0, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60, seventy: 70, eighty: 80, ninety: 90 };
+const NUM_ALT = Object.keys(NUMW).join('|') + '|hundred|thousand';
+const NUM_RE = new RegExp(`\\b(?:${NUM_ALT})(?:[\\s-]+(?:${NUM_ALT}))*\\b`, 'gi');
+const wordsToDigits = s => s.replace(NUM_RE, m => {
+  if (/^one$/i.test(m)) return m; // "this one" is usually not a number
+  let total = 0, cur = 0;
+  for (const w of m.toLowerCase().split(/[\s-]+/)) { if (w === 'hundred') cur = (cur || 1) * 100; else if (w === 'thousand') { total += (cur || 1) * 1000; cur = 0; } else cur += NUMW[w]; }
+  return String(total + cur);
+});
+const CAT_KEYS = {
+  'Takeout & delivery': ['food', 'lunch', 'dinner', 'breakfast', 'restaurant', 'coffee', 'pizza', 'meal'],
+  Travel: ['taxi', 'cab', 'flight', 'gas', 'fuel', 'train', 'bus', 'parking', 'ride', 'hotel'],
+  Groceries: ['grocery', 'supermarket'],
+  Utilities: ['electricity', 'electric', 'internet', 'wifi', 'water', 'phone'],
+  Subscriptions: ['subscription', 'membership'],
+  Shopping: ['clothes', 'shoes', 'gift'],
+  Health: ['doctor', 'pharmacy', 'medicine', 'gym', 'dentist'],
+  Entertainment: ['movie', 'concert', 'game', 'ticket'],
+  Education: ['tuition', 'book', 'course'],
+};
+const LOAN_RE = /\b(lent|lend|lending|loaned|loaning|loan|owes? me|gave)\b/i;
+const INC_RE = /\b(received|earned|got paid|salary|paycheck|income|refund|reimbursed)\b/i;
+const EXP_RE = /\b(spent|spend|paid|pay|bought|cost|purchased)\b/i;
+const stem = w => w.replace(/(ies|y)$/, '').replace(/s$/, '');
+const escRe = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const titleCase = s => s.replace(/(^|\s)(?!(?:and|of|the|for|to)\b)([a-z])/g, (m, a, b) => a + b.toUpperCase());
+const tidy = s => s.replace(/\$?\s*\d[\d.]*(?:st|nd|rd|th)?\s*(?:dollars?|bucks|usd)?/gi, ' ').replace(/[.,;!?]+$/, '').replace(/\s+/g, ' ').trim();
+function findAmount(c) {
+  const m = c.match(/\$\s*(\d+(?:\.\d{1,2})?)/) || c.match(/(\d+(?:\.\d{1,2})?)\s*(?:dollars?|bucks|usd)\b/i)
+    || c.match(/(?<![\w.])(\d+(?:\.\d{1,2})?)(?![\d.])(?!\s*(?:st|nd|rd|th|%|am|pm)\b)/i);
+  return m ? toCents(m[1]) : 0;
+}
+function dateFrom(s) {
+  if (/\b(yesterday|last night)\b/i.test(s)) return ymd(addDays(new Date(), -1));
+  return /\b(today|tonight|this morning)\b/i.test(s) ? today() : null;
+}
+function matchCat(s, type) {
+  s = (s || '').toLowerCase();
+  if (!s) return null;
+  const cats = S.cats.filter(c => c.type === type), words = s.split(/[^a-z]+/).filter(Boolean).map(stem);
+  let c = cats.find(x => s.includes(x.name.toLowerCase()))
+    || cats.find(x => x.name.toLowerCase().split(/[^a-z]+/).filter(w => w.length >= 4 && w !== 'other').map(stem).some(k => words.includes(k)));
+  if (c) return c.id;
+  for (const [name, keys] of Object.entries(CAT_KEYS)) if (keys.some(k => words.includes(stem(k))) && (c = cats.find(x => x.name === name))) return c.id;
+  return null;
+}
+// Turns "spent 60 at Chipotle, lent 20 to Rahul and 15 to Priya" into draft entries. Runs entirely on the device.
+function parseEntry(raw) {
+  const text = wordsToDigits(raw.replace(/(\d),(?=\d{3}\b)/g, '$1')).replace(/\s+/g, ' ').trim();
+  if (!text) return [];
+  const parts = text.split(/(\s*(?:[,;]|\.(?!\d)|\band\b|\balso\b|\bplus\b|\bthen\b)\s*)/i), clauses = [];
+  for (let i = 0; i < parts.length; i += 2) {
+    if (!parts[i].trim()) continue;
+    const last = clauses.length - 1;
+    if (last >= 0 && (!findAmount(parts[i]) || !findAmount(clauses[last]))) clauses[last] += (parts[i - 1] || ' ') + parts[i]; else clauses.push(parts[i]);
+  }
+  const gDate = dateFrom(text), out = [];
+  let prev = 'expense';
+  for (let c of clauses) {
+    const amount = findAmount(c);
+    if (!amount) continue;
+    const kind = LOAN_RE.test(c) ? 'loan' : INC_RE.test(c) ? 'income' : EXP_RE.test(c) ? 'expense' : prev;
+    prev = kind;
+    const date = dateFrom(c) || gDate || today();
+    c = c.replace(/\b(yesterday|today|last night|this morning|tonight)\b/gi, ' ').replace(/\s+/g, ' ').trim();
+    if (kind === 'loan') {
+      const m = c.match(/\bto\s+(.+?)(?=\s+for\b|$)/i) || c.match(/\b(?:lent|loaned|gave|lend|lending)\s+(?!\$|\d)(.+?)\s+\$?\d/i) || c.match(/^(.+?)\s+owes? me\b/i);
+      out.push({ kind, amount, date, person: m ? titleCase(tidy(m[1])) : '', note: tidy((c.match(/\bfor\s+(.+)$/i) || [])[1] || '') });
+      continue;
+    }
+    let pmId = null;
+    for (const p of S.pms.slice().sort((a, b) => b.name.length - a.name.length)) {
+      const re = new RegExp(`\\b(?:(?:with|using|on|via|by|in)\\s+)?(?:my\\s+)?${escRe(p.name)}\\b`, 'i');
+      if (re.test(c)) { pmId = p.id; c = c.replace(re, ' ').replace(/\s+/g, ' ').trim(); break; }
+    }
+    const stop = '(?=\\s+(?:for|on|at|from|with|using|via)\\b|$)';
+    let merchant = titleCase(tidy((c.match(new RegExp(`\\b(?:at|from)\\s+(.+?)${stop}`, 'i')) || [])[1] || ''));
+    let phrase = tidy((c.match(new RegExp(`\\b(?:on|for)\\s+(.+?)${stop}`, 'i')) || [])[1] || '');
+    if (EXP_RE.test(phrase) || INC_RE.test(phrase) || phrase.split(' ').length > 4) phrase = '';
+    if (!merchant && !phrase) { // "Uber 18": a bare name next to the amount is the merchant
+      const bare = tidy(c.replace(/\b(i|we|i've|just|have|spent|spend|paid|pay|bought|cost|purchased|received|earned|got|about|around)\b/gi, ' '));
+      if (bare && bare.split(' ').length <= 3 && !matchCat(bare, kind)) merchant = titleCase(bare);
+    }
+    const categoryId = matchCat(phrase, kind) || guessCat(merchant, kind) || matchCat(c, kind)
+      || S.cats.find(x => x.type === kind && /^other/i.test(x.name))?.id || S.cats.find(x => x.type === kind)?.id || null;
+    const explained = matchCat(phrase, kind) === categoryId && (cat(categoryId)?.name || '').toLowerCase().includes(phrase.toLowerCase());
+    out.push({ kind, amount, date, merchant, categoryId, paymentMethodId: pmId || (pm(S.prefs.lastPm) ? S.prefs.lastPm : S.pms[0]?.id || null), note: phrase && !explained ? phrase : '' });
+  }
+  return out;
+}
+
+function openSmartSheet() {
+  let drafts = [], img = null, recog = null, busy = false;
+  const el = openSheet(`${head('Say it or snap it', 'Save')}
+    <div class="sheet-body">
+      <div><label class="lab" for="s-text">What happened?</label>
+        <textarea id="s-text" rows="3" placeholder="Spent 60 at Chipotle, lent 20 to Rahul and 15 to Priya" autocapitalize="sentences"></textarea></div>
+      <div class="three">
+        <button type="button" class="btn soft mini" id="s-mic">🎤 Speak</button>
+        <button type="button" class="btn soft mini" id="s-paste">📋 Paste image</button>
+        <label class="btn soft mini">🖼 Photo<input id="s-file" type="file" accept="image/*" hidden></label>
+      </div>
+      <div class="thumb" id="s-thumb" hidden><img alt="Attached photo" id="s-img"><span class="note" style="flex:1">Saved with every entry below.</span><button type="button" class="link" id="s-rm" style="color:var(--danger)">Remove</button></div>
+      <div id="s-items"></div>
+      <label class="check" id="s-share" hidden><input type="checkbox" id="s-inc"> <span>What I spent includes what I lent — record only my share</span></label>
+    </div>`, { tall: true, onClose: () => recog?.abort() });
+  const q = s => $(s, el), ta = q('#s-text'), items = q('#s-items'), mic = q('#s-mic');
+  const paint = () => {
+    q('#s-share').hidden = !(drafts.some(d => d.kind === 'expense') && drafts.some(d => d.kind === 'loan'));
+    if (!drafts.length) {
+      items.innerHTML = `<p class="note">${ta.value.trim() ? 'I could not find an amount in that yet. Include a number, like “spent 12 on lunch”.' : 'Type it, or dictate with <b>Speak</b> or the microphone key on your keyboard. Say what you spent and what you lent, for example:<br>“Paid 45 at Costco with cash”<br>“Lent 30 to Priya for the movie”<br>“Received 200 from Dad”<br>A pasted or chosen photo is kept as the receipt.'}</p>`;
+      return;
+    }
+    items.innerHTML = drafts.map((d, i) => `<div class="draft"><div class="dh"><b>${d.kind === 'loan' ? 'Lent' : d.kind === 'income' ? 'Income' : 'Spent'}</b><small class="muted">${d.date === today() ? 'Today' : shortDate(d.date)}</small><span class="amt-in">$<input data-i="${i}" data-k="amount" type="text" inputmode="decimal" value="${(d.amount / 100).toFixed(2)}" aria-label="Amount"></span><button type="button" class="link" data-rm="${i}" aria-label="Remove this entry">✕</button></div>${d.kind === 'loan'
+      ? `<input data-i="${i}" data-k="person" type="text" placeholder="Who did you lend to?" aria-label="Lent to" autocomplete="off" value="${esc(d.person)}">`
+      : `<div class="two"><select data-i="${i}" data-k="categoryId" aria-label="Category">${opts(S.cats.filter(c => c.type === d.kind).map(c => [c.id, `${c.icon} ${c.name}`]), d.categoryId)}</select><input data-i="${i}" data-k="merchant" type="text" placeholder="Merchant (optional)" aria-label="Merchant" autocomplete="off" value="${esc(d.merchant)}"></div>`}</div>`).join('');
+  };
+  const parse = () => { drafts = parseEntry(ta.value); paint(); };
+  const setImage = async blob => { try { img = await fileToDataUrl(blob); q('#s-img').src = img; q('#s-thumb').hidden = false; } catch (e) { toast(e.message); } };
+
+  paint();
+  ta.oninput = parse;
+  items.oninput = items.onchange = e => { const t = e.target, d = drafts[t.dataset.i]; if (d && t.dataset.k) d[t.dataset.k] = t.dataset.k === 'amount' ? toCents(t.value) : t.value; };
+  items.onclick = e => { const b = e.target.closest('[data-rm]'); if (b) { drafts.splice(+b.dataset.rm, 1); paint(); } };
+  q('#s-file').onchange = e => { const f = e.target.files[0]; e.target.value = ''; if (f) setImage(f); };
+  q('#s-rm').onclick = () => { img = null; q('#s-thumb').hidden = true; };
+  q('#s-img').onclick = () => showImage(img);
+  el.addEventListener('paste', e => { const f = [...(e.clipboardData?.files || [])].find(x => x.type.startsWith('image/')); if (f) { e.preventDefault(); setImage(f); } });
+  q('#s-paste').onclick = async () => {
+    try {
+      for (const it of await navigator.clipboard.read()) { const t = it.types.find(x => x.startsWith('image/')); if (t) return setImage(await it.getType(t)); }
+      toast('No image on the clipboard. Copy one first, or use Photo.');
+    } catch { toast('Could not read the clipboard. Copy an image first, or use Photo.'); }
+  };
+  mic.onclick = () => {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (recog) return recog.stop();
+    if (!SR) { ta.focus(); return toast('Tap the microphone key on your keyboard to dictate'); }
+    const base = ta.value.trim();
+    recog = new SR(); recog.lang = 'en-US'; recog.interimResults = true;
+    recog.onresult = e => { ta.value = (base ? base + ', ' : '') + [...e.results].map(r => r[0].transcript).join(' '); parse(); };
+    recog.onerror = e => { if (e.error !== 'aborted' && e.error !== 'no-speech') { toast('Voice input is not available here. Use the microphone key on your keyboard.'); ta.focus(); } };
+    recog.onend = () => { recog = null; mic.textContent = '🎤 Speak'; };
+    try { recog.start(); mic.textContent = '■ Stop'; } catch { recog = null; }
+  };
+
+  q('[data-do]').onclick = async () => {
+    if (busy) return;
+    if (!drafts.length) return toast('Say or type what you spent first');
+    const list = drafts.map(d => ({ ...d }));
+    if (q('#s-inc').checked && !q('#s-share').hidden) {
+      const first = list.find(d => d.kind === 'expense'), lent = list.reduce((n, d) => n + (d.kind === 'loan' ? d.amount : 0), 0);
+      if (lent > first.amount) return toast('You lent more than you spent. Untick the box or fix the amounts.');
+      first.amount -= lent;
+    }
+    const keep = list.filter(d => d.amount > 0);
+    if (keep.some(d => d.kind === 'loan' && !d.person.trim())) return toast('Add a name for each amount you lent');
+    if (keep.some(d => d.kind !== 'loan' && !d.categoryId)) return toast('Pick a category for each entry');
+    busy = true;
+    try {
+      const now = Date.now();
+      const txs = keep.filter(d => d.kind !== 'loan').map((d, i) => ({ id: uid(), type: d.kind, amount: d.amount, categoryId: d.categoryId, merchant: d.merchant.trim(), paymentMethodId: d.paymentMethodId, date: d.date, note: d.note, receiptId: null, createdAt: now + i, updatedAt: now }));
+      const loans = keep.filter(d => d.kind === 'loan').map((d, i) => ({ id: uid(), person: titleCase(d.person.trim()), amount: d.amount, date: d.date, note: d.note, receiptId: null, settled: false, createdAt: now + i }));
+      const dupes = txs.filter(t => S.tx.some(x => fp(x) === fp(t))).length;
+      if (dupes && !await confirmSheet('Possible duplicate', `${dupes} of these ${dupes === 1 ? 'matches a transaction' : 'match transactions'} you already recorded. Save anyway?`, 'Save anyway')) return;
+      if (img) for (const r of [...txs, ...loans]) { r.receiptId = uid(); await put('receipts', { id: r.receiptId, dataUrl: img }); }
+      await bulkPut('transactions', txs); await bulkPut('loans', loans);
+      S.tx.push(...txs); sortTx(); S.loans.unshift(...loans);
+      if (txs.length) await setPref('recentCats', [...new Set([...txs.map(t => t.categoryId), ...(S.prefs.recentCats || [])])].slice(0, 12));
+      closeSheet(el); toast(`Saved ${keep.length} ${keep.length === 1 ? 'entry' : 'entries'}`); render();
+      navigator.storage?.persist?.().catch(() => {});
+    } catch (err) { toast('Could not save: ' + err.message); } finally { busy = false; }
+  };
+}
+
 /* ---------- backup, restore, CSV ---------- */
 async function deliver(name, mime, text) {
   const file = new File([text], name, { type: mime });
@@ -662,6 +888,9 @@ async function restore(file) {
     if (S.recurring.some(x => x.id === r.id || (x.name.toLowerCase() === r.name.toLowerCase() && x.amount === r.amount))) continue;
     await put('recurring', { ...r, categoryId: catMap[r.categoryId] ?? r.categoryId, paymentMethodId: pmMap[r.paymentMethodId] ?? r.paymentMethodId });
   }
+  const newLoans = (d.loans || []).filter(l => !S.loans.some(x => x.id === l.id));
+  await bulkPut('loans', newLoans);
+  await bulkPut('receipts', newLoans.filter(l => l.receiptId && rec.has(l.receiptId)).map(l => rec.get(l.receiptId)));
   await loadAll(); render();
   toast(`Added ${fresh.length}, skipped ${skipped} duplicate${skipped === 1 ? '' : 's'}`);
 }
@@ -744,7 +973,7 @@ const ACT = {
   'close-sheet'(b) { closeSheet(b.closest('.sheet-wrap')); },
   month(b) { S.month = addMonths(S.month, +b.dataset.d); render(); },
   async theme(b) { await setPref('theme', b.dataset.v); applyTheme(); render(); },
-  cats: openCategories, pms: openPaymentMethods, recurring: openRecurring,
+  cats: openCategories, pms: openPaymentMethods, recurring: openRecurring, loans: openLoans, smart: openSmartSheet,
   backup, csv: exportCsv,
   async snooze() { await setPref('backupSnooze', Date.now() + 7 * 864e5); render(); },
   async 'log-rec'(b) { const r = S.recurring.find(x => x.id === b.dataset.id); if (!r) return; await logRecurring(r, r.nextDate < today() ? r.nextDate : today()); toast(`Logged ${r.name}`); render(); },
@@ -757,7 +986,7 @@ const ACT = {
     render();
   },
   async erase() {
-    if (!await confirmSheet('Erase all data?', 'Every transaction, budget, category, recurring item and receipt on this device will be permanently deleted. Make a backup first if you might want it back.', 'Erase everything', true)) return;
+    if (!await confirmSheet('Erase all data?', 'Every transaction, budget, category, recurring item, loan and receipt on this device will be permanently deleted. Make a backup first if you might want it back.', 'Erase everything', true)) return;
     for (const s of STORES) await clearStore(s);
     await loadAll(); await seed(); applyTheme(); render(); toast('All data erased');
   },

@@ -130,7 +130,7 @@ nav button.on { color: var(--accent); }
 .daterow { display: flex; justify-content: space-between; font-size: 12.5px; font-weight: 700; color: var(--muted); margin: 16px 6px 6px; text-transform: uppercase; letter-spacing: .04em; }
 
 /* ---------- inputs ---------- */
-input[type="text"], input[type="search"], input[type="date"], input[type="number"], select, .input {
+textarea, input[type="text"], input[type="search"], input[type="date"], input[type="number"], select, .input {
   width: 100%; min-height: 46px; padding: 10px 12px; border-radius: 12px;
   border: 1px solid var(--line); background: var(--card); color: var(--text);
   -webkit-appearance: none; appearance: none; font-size: 16px;
@@ -241,3 +241,26 @@ table.mini td { text-align: right; padding: 5px 0; border-top: 1px solid var(--l
 }
 #toast.show { opacity: 1; }
 [hidden] { display: none !important; }
+
+/* ---------- voice / photo entry, lending ---------- */
+textarea { font: inherit; font-size: 16px; resize: none; line-height: 1.4; display: block; }
+textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+#fab2 {
+  position: fixed; right: 25px; bottom: calc(env(safe-area-inset-bottom) + 146px); z-index: 5;
+  width: 46px; height: 46px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--card); color: var(--accent); border: 1px solid var(--line); box-shadow: 0 3px 10px rgba(16, 35, 31, .16);
+}
+#fab2:active { transform: scale(.95); }
+.three { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.btn.mini { min-height: 46px; font-size: 14px; font-weight: 600; padding: 0 6px; white-space: nowrap; }
+.three .btn + .btn { margin-top: 0; }
+.draft { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 10px 12px 12px; display: grid; gap: 8px; }
+.draft + .draft { margin-top: 8px; }
+.dh { display: flex; align-items: center; gap: 8px; }
+.dh b { font-size: 15px; }
+.dh small { flex: 1; font-size: 12.5px; }
+.amt-in { display: flex; align-items: center; gap: 2px; font-weight: 700; font-size: 18px; color: var(--muted); }
+.amt-in input { width: 104px; min-height: 40px; padding: 4px 8px; font-weight: 700; font-size: 18px; text-align: right; }
+.draft .two select, .draft .two input { font-size: 15px; min-height: 42px; padding: 8px 10px; }
+.draft .two select { padding-right: 26px; }
+.check span { flex: 1; font-size: 14.5px; line-height: 1.35; }

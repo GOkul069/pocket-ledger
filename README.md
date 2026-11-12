@@ -16,6 +16,8 @@ Install it before you start entering data: the Home Screen app keeps its own sto
 ## Using it
 
 - **Add an expense:** tap **+**, type the amount, tap a category, tap **Save**. The date is today and the payment method is the one you used last. Your most recent categories come first.
+- **Say it or snap it:** tap the small microphone button above **+**. Type or dictate what happened, for example *"Spent 60 at Chipotle, lent 20 to Rahul and 15 to Priya"*. The app turns that into entries you can check and fix before saving. Paste a screenshot or choose a photo and it is kept as the receipt. Tick *record only my share* if the amount you spent already includes what you lent. On iPhone, the microphone key on the keyboard is the most dependable way to dictate.
+- **Lending:** money you lend is listed under *Owed to you* on Home and is not counted as spending. Tap **Manage** to mark a loan repaid, edit it, or add one by hand.
 - **Merchant:** optional. Merchants you have used appear as one-tap suggestions and bring their usual category with them.
 - **Income:** switch the toggle at the top of the entry sheet to *Income*.
 - **Edit or delete:** tap any transaction.

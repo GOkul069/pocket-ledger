@@ -1,6 +1,6 @@
 // Offline support: the app shell is cached on first visit and served from cache afterwards.
 // Bump CACHE whenever any file below changes so installed copies pick up the new version.
-const CACHE = 'pocket-ledger-v1';
+const CACHE = 'pocket-ledger-v2';
 const ASSETS = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest', 'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', e => {
